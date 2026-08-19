@@ -9,6 +9,7 @@ import os
 CLOSE_FIELDS = {
     "lead": {
         "funnel_name": "cf_xqDQE8fkPsWa0RNEve7hcaxKblCe6489XeZGRDzyPdX",
+        "setter_name": "cf_vz6kNiu4ItFxRA8Y9HKlWIoQMq3TsdaQqKekQ2YuxVk",
     },
     "contact": {
         "utm_source":   "cf_HA1ayKpXNvIKtmfTfLKWTZoEdBrpq5M35d19GinU5on",
@@ -88,8 +89,10 @@ SIMPLE_SOURCE_MAPPINGS = {
     "newsletter":       "VSL",
     "tiktok":           "TikTok",
     "ak-ig":            "Anthony IG",
+    "anthony-ig":       "Anthony IG",
     "anthony-x":        "Anthony X",
     "anthony-li":       "Linkedin",
+    "anthony-tt":       "TikTok",
     "ltf":              "LTF - In-House",
     "mike-ig":          "Instagram",
     "mike instagram":   "Instagram",
@@ -112,8 +115,10 @@ MALFORMED_SOURCE_PREFIXES = {
     "newsletter":       "VSL",
     "tiktok":           "TikTok",
     "ak-ig":            "Anthony IG",
+    "anthony-ig":       "Anthony IG",
     "anthony-x":        "Anthony X",
     "anthony-li":       "Linkedin",
+    "anthony-tt":       "TikTok",
     "ltf":              "LTF - In-House",
     "mike-ig":          "Instagram",
     "mike instagram":   "Instagram",
@@ -134,6 +139,27 @@ SOURCE_MEDIUM_OVERRIDES = {
     "instagram": {
         "organic-social": "Anthony IG",
     },
+}
+
+# -----------------------------------------------------------------------------
+# UTM source → setter name attribution
+# -----------------------------------------------------------------------------
+# When a contact comes in via one of these utm_sources, the funnel write
+# ALSO writes this value to the lead's "Reactivation - Setter Name" field.
+# Fill-only — an existing setter name is never overwritten. Only fires
+# on the same passes where we'd write the funnel (not on already_set /
+# conflict leads).
+#
+# The setter-name field is a Close choice field, so the values here MUST
+# match exactly one of that field's configured choices in Close.
+# Keys MUST be lowercase.
+UTM_SOURCE_TO_SETTER = {
+    "mike-x":     "Pearl Sathekge",
+    "mike-ig":    "Pearl Sathekge",
+    "anthony-x":  "Pearl Sathekge",
+    "anthony-ig": "Pearl Sathekge",
+    "anthony-li": "Pearl Sathekge",
+    "anthony-tt": "Pearl Sathekge",
 }
 
 # -----------------------------------------------------------------------------
