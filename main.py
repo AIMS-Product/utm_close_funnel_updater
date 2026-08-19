@@ -123,6 +123,7 @@ def main() -> int:
         "leads_processed":           0,
         "leads_updated":             0,
         "leads_overwritten":         0,   # subset of leads_updated where we replaced an OVERRIDABLE current value
+        "leads_setter_written":      0,   # count of leads where the utm-source-based setter name was also written
         "leads_skipped_already_set": 0,
         "leads_raced":               0,   # Zap (or other integration) populated the field between our two reads
         "conflicts":                 0,
@@ -221,6 +222,7 @@ def main() -> int:
 
     cli = close.CloseClient(api_key)
     funnel_name_field  = config.CLOSE_FIELDS["lead"]["funnel_name"]
+    setter_name_field  = config.CLOSE_FIELDS["lead"]["setter_name"]
 
     # -------------------------------------------------------------------------
     # 2. Funnel rewrite pass (direct current-funnel → target-funnel migrations)
@@ -489,9 +491,20 @@ def main() -> int:
         # in the GitHub Actions log search (e.g. search for "[Instagram]").
         ftag = f"[{target_funnel}]"
 
-        # Fetch the lead to read its current Funnel Name
+        # Determine target setter name based on the triggering contact's
+        # utm_source. Fill-only — only written if the setter field is empty.
+        triggering_utm_source = matcher.normalize(
+            contacts[0].get(f"custom.{utm_source_field}")
+        )
+        target_setter = config.UTM_SOURCE_TO_SETTER.get(triggering_utm_source)
+
+        # Fetch the lead to read its current Funnel Name + Setter Name
         try:
-            lead = cli.get_lead(lead_id, ["id", "display_name", f"custom.{funnel_name_field}"])
+            lead = cli.get_lead(lead_id, [
+                "id", "display_name",
+                f"custom.{funnel_name_field}",
+                f"custom.{setter_name_field}",
+            ])
         except Exception as e:
             log.warning("%s Failed to fetch lead %s: %s", ftag, lead_id, e)
             stats["errors"] += 1
@@ -500,6 +513,7 @@ def main() -> int:
         display_name = lead.get("display_name") or "(no name)"
         current_funnel = str(lead.get(f"custom.{funnel_name_field}") or "").strip()
         raw_funnel_value = lead.get(f"custom.{funnel_name_field}")
+        current_setter = str(lead.get(f"custom.{setter_name_field}") or "").strip()
 
         # --- Check A: write decision based on utm_source ---
         action = _decide_action(current_funnel, target_funnel)
@@ -516,15 +530,27 @@ def main() -> int:
                 overwrite_note = ""
                 current_funnel_desc = f"raw={raw_funnel_value!r} (treated as empty)"
 
+            # Setter write decision (fill-only, only meaningful when we're
+            # also writing the funnel). Compute here so we can log the plan.
+            planned_setter_write = (
+                target_setter is not None and not current_setter
+            )
+            setter_desc = ""
+            if target_setter is not None:
+                if planned_setter_write:
+                    setter_desc = f"\n  setter name:    empty → will write {target_setter!r}"
+                else:
+                    setter_desc = f"\n  setter name:    {current_setter!r} (already set — will NOT overwrite)"
+
             tag = "[DRY] Would update" if config.DRY_RUN else "Updating"
             log.info(
                 "%s %s lead %s '%s'%s\n"
                 "  url:            %s\n"
                 "  current funnel: %s\n"
-                "  target funnel:  %r\n"
+                "  target funnel:  %r%s\n"
                 "  triggering contacts (%d):\n%s",
                 ftag, tag, lead_id, display_name, overwrite_note, lead_url,
-                current_funnel_desc, target_funnel, len(contacts),
+                current_funnel_desc, target_funnel, setter_desc, len(contacts),
                 _format_contacts(contacts),
             )
 
@@ -533,15 +559,22 @@ def main() -> int:
                 _bump(target_funnel, "updated")
                 if action == "overwrite":
                     stats["leads_overwritten"] += 1
+                if planned_setter_write:
+                    stats["leads_setter_written"] += 1
             else:
                 # Race-protection: re-fetch immediately before write. Use
                 # _decide_action to re-evaluate against whatever the field
                 # contains NOW — handles cases where another integration
                 # cleared it, set it to our target, or set it to something
-                # we shouldn't overwrite.
+                # we shouldn't overwrite. Re-fetch setter too so we don't
+                # stomp on a setter name written between our reads.
                 try:
                     lead_recheck = cli.get_lead(
-                        lead_id, ["id", f"custom.{funnel_name_field}"],
+                        lead_id, [
+                            "id",
+                            f"custom.{funnel_name_field}",
+                            f"custom.{setter_name_field}",
+                        ],
                     )
                 except Exception as e:
                     log.warning("%s Failed to re-fetch lead %s before write: %s", ftag, lead_id, e)
@@ -550,6 +583,9 @@ def main() -> int:
 
                 recheck_raw = lead_recheck.get(f"custom.{funnel_name_field}")
                 recheck_funnel = str(recheck_raw or "").strip()
+                recheck_setter = str(
+                    lead_recheck.get(f"custom.{setter_name_field}") or ""
+                ).strip()
                 recheck_action = _decide_action(recheck_funnel, target_funnel)
 
                 if recheck_action == "skip_already_set":
@@ -582,20 +618,31 @@ def main() -> int:
                     })
                     continue
 
-                # recheck_action is "write" or "overwrite" — proceed with PUT
+                # recheck_action is "write" or "overwrite" — proceed with PUT.
+                # Include setter in the same PUT when target_setter is set
+                # AND the recheck showed setter is still empty.
+                write_setter = (
+                    target_setter is not None and not recheck_setter
+                )
+                put_body = {f"custom.{funnel_name_field}": target_funnel}
+                if write_setter:
+                    put_body[f"custom.{setter_name_field}"] = target_setter
+
                 try:
-                    cli.update_lead(lead_id, {
-                        f"custom.{funnel_name_field}": target_funnel,
-                    })
+                    cli.update_lead(lead_id, put_body)
                     overwrite_marker = " [OVERWRITE]" if recheck_action == "overwrite" else ""
+                    setter_marker = f" setter='{target_setter}'" if write_setter else ""
                     log.info(
-                        f"{_GREEN}%s   → wrote: lead %s funnel set to '%s' (was raw=%r){overwrite_marker}{_RESET}",
+                        f"{_GREEN}%s   → wrote: lead %s funnel set to '%s'"
+                        f"{setter_marker} (was raw=%r){overwrite_marker}{_RESET}",
                         ftag, lead_id, target_funnel, recheck_raw,
                     )
                     stats["leads_updated"] += 1
                     _bump(target_funnel, "updated")
                     if recheck_action == "overwrite":
                         stats["leads_overwritten"] += 1
+                    if write_setter:
+                        stats["leads_setter_written"] += 1
                 except Exception as e:
                     log.warning("%s Failed to update lead %s: %s", ftag, lead_id, e)
                     stats["errors"] += 1
@@ -679,14 +726,15 @@ def main() -> int:
 
     log.info(
         "=== Done in %ds | scanned=%d false_pos=%d processed=%d updated=%d "
-        "(of which overwrites=%d) already_set=%d raced=%d conflicts=%d "
-        "missing=%d errors=%d ===",
+        "(of which overwrites=%d, setter_names_written=%d) "
+        "already_set=%d raced=%d conflicts=%d missing=%d errors=%d ===",
         stats["duration_sec"],
         stats["contacts_scanned"],
         stats["contacts_false_positive"],
         stats["leads_processed"],
         stats["leads_updated"],
         stats["leads_overwritten"],
+        stats["leads_setter_written"],
         stats["leads_skipped_already_set"],
         stats["leads_raced"],
         stats["conflicts"],
