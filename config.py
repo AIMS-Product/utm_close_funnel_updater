@@ -154,12 +154,12 @@ SOURCE_MEDIUM_OVERRIDES = {
 # match exactly one of that field's configured choices in Close.
 # Keys MUST be lowercase.
 UTM_SOURCE_TO_SETTER = {
-    "mike-x":     "Pearl Sathekge",
     "mike-ig":    "Pearl Sathekge",
-    "anthony-x":  "Pearl Sathekge",
-    "anthony-ig": "Pearl Sathekge",
-    "anthony-li": "Pearl Sathekge",
-    "anthony-tt": "Pearl Sathekge",
+    "mike-x":     "Mariam Olufumi",
+    "anthony-x":  "Mariam Olufumi",
+    "anthony-li": "Mariam Olufumi",
+    # anthony-ig and anthony-tt intentionally omitted — funnel writes still
+    # happen for these utm_sources, but no setter name is written.
 }
 
 # -----------------------------------------------------------------------------
