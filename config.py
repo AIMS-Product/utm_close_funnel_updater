@@ -10,6 +10,7 @@ CLOSE_FIELDS = {
     "lead": {
         "funnel_name": "cf_xqDQE8fkPsWa0RNEve7hcaxKblCe6489XeZGRDzyPdX",
         "setter_name": "cf_vz6kNiu4ItFxRA8Y9HKlWIoQMq3TsdaQqKekQ2YuxVk",
+        "resource_tag": "cf_PWAGlTAxZ62ybFh01xcEzVl0RHw6KUXHp4g4YFb2PgT",
     },
     "contact": {
         "utm_source":   "cf_HA1ayKpXNvIKtmfTfLKWTZoEdBrpq5M35d19GinU5on",
@@ -98,6 +99,7 @@ SIMPLE_SOURCE_MAPPINGS = {
     "mike instagram":   "Instagram",
     "mike li":          "Linkedin",
     "mike-x":           "X",
+    "chatbot":          "Website",
 }
 
 # Some integrations stuff the entire UTM query string into the utm_source
@@ -124,6 +126,7 @@ MALFORMED_SOURCE_PREFIXES = {
     "mike instagram":   "Instagram",
     "mike li":          "Linkedin",
     "mike-x":           "X",
+    "chatbot":          "Website",
 }
 
 # -----------------------------------------------------------------------------
@@ -160,6 +163,24 @@ UTM_SOURCE_TO_SETTER = {
     "anthony-li": "Mariam Olufumi",
     # anthony-ig and anthony-tt intentionally omitted — funnel writes still
     # happen for these utm_sources, but no setter name is written.
+}
+
+# -----------------------------------------------------------------------------
+# Resource Tag → funnel (lead-level fallback when no UTMs are present)
+# -----------------------------------------------------------------------------
+# Some leads (notably from the website application form) come through with
+# no utm_source on any contact. For those, we fall back to the lead-level
+# "Resource Tag" custom field. If a lead's Resource Tag matches a KEY below
+# AND every contact on the lead has an empty utm_source, we write the VALUE
+# as the funnel name.
+#
+# Runs as its own pass AFTER the utm_source scan. Any lead already picked up
+# by the utm_source pass is skipped here — utm_source always wins.
+#
+# Keys are compared exactly (case-sensitive) since Resource Tag is a text
+# field, not a choices field.
+RESOURCE_TAG_TO_FUNNEL = {
+    "website-application": "Website",
 }
 
 # -----------------------------------------------------------------------------
