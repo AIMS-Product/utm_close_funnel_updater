@@ -449,6 +449,103 @@ def main() -> int:
     )
 
     # -------------------------------------------------------------------------
+    # 3b. Resource Tag pass (lead-level fallback for UTM-less leads)
+    # -------------------------------------------------------------------------
+    # For each rule in RESOURCE_TAG_TO_FUNNEL, search leads whose Resource
+    # Tag matches. For each match, fetch the lead's contacts; only add to
+    # leads_to_process if EVERY contact has an empty utm_source (matches the
+    # "only fall back when utm_source is missing" rule). Skips leads already
+    # picked up by the utm_source pass — utm_source always wins.
+    if config.RESOURCE_TAG_TO_FUNNEL:
+        log.info("=== Step 3b: Resource Tag pass ===")
+        resource_tag_field = config.CLOSE_FIELDS["lead"]["resource_tag"]
+
+        for tag_value, target_funnel in config.RESOURCE_TAG_TO_FUNNEL.items():
+            ftag = f"[{target_funnel}]"
+            query = f'custom.{resource_tag_field}:"{tag_value}"'
+            log.info("%s Searching leads with Resource Tag = %r", ftag, tag_value)
+
+            rt_scanned = 0
+            rt_false_positive = 0
+            rt_already_processed = 0
+            rt_utm_present = 0
+            rt_added = 0
+
+            try:
+                for lead in cli.search_leads(
+                    query,
+                    ["id", "display_name", "date_updated",
+                     f"custom.{resource_tag_field}"],
+                ):
+                    rt_scanned += 1
+
+                    # Age cutoff — same window as utm_source pass. Sorted DESC,
+                    # so break on first out-of-window lead.
+                    date_updated = lead.get("date_updated")
+                    if not matcher.is_recent(date_updated, config.LOOKBACK_DAYS):
+                        log.info(
+                            "%s Hit lookback cutoff at lead %s (date_updated=%s) "
+                            "after scanning %d leads — stopping pass for %r",
+                            ftag, lead.get("id"), date_updated, rt_scanned, tag_value,
+                        )
+                        break
+
+                    # Close's search is fuzzy; verify exact match
+                    current_tag = str(lead.get(f"custom.{resource_tag_field}") or "").strip()
+                    if current_tag != tag_value:
+                        rt_false_positive += 1
+                        continue
+
+                    lead_id = lead.get("id")
+                    if not lead_id:
+                        continue
+
+                    # utm_source pass already caught this lead — utm_source wins
+                    if lead_id in leads_to_process:
+                        rt_already_processed += 1
+                        continue
+
+                    # Fetch every contact on the lead and verify all utm_sources
+                    # are empty. If any contact has a utm_source (even one we
+                    # don't recognize), skip per the user's "only if missing" rule.
+                    try:
+                        lead_contacts = cli.list_contacts_for_lead(
+                            lead_id,
+                            contact_fields,   # already defined in utm_source pass
+                        )
+                    except Exception as e:
+                        log.warning("%s Failed to list contacts for lead %s: %s",
+                                    ftag, lead_id, e)
+                        stats["errors"] += 1
+                        continue
+
+                    if any(
+                        str(c.get(f"custom.{utm_source_field}") or "").strip()
+                        for c in lead_contacts
+                    ):
+                        rt_utm_present += 1
+                        continue
+
+                    # All contacts have empty utm_source — apply target funnel.
+                    # Mark contacts with _funnel so the processing loop treats
+                    # them like the utm_source pass would.
+                    for c in lead_contacts:
+                        c["_funnel"] = target_funnel
+                    leads_to_process[lead_id] = lead_contacts
+                    rt_added += 1
+            except Exception:
+                log.exception("%s Unexpected error during Resource Tag pass for %r",
+                              ftag, tag_value)
+                stats["errors"] += 1
+
+            log.info(
+                "%s Resource Tag %r → %r summary: scanned=%d false_pos=%d "
+                "already_processed_by_utm=%d skipped_utm_present=%d added=%d",
+                ftag, tag_value, target_funnel, rt_scanned, rt_false_positive,
+                rt_already_processed, rt_utm_present, rt_added,
+            )
+
+    # -------------------------------------------------------------------------
     # 4. Process each lead
     # -------------------------------------------------------------------------
     log.info("=== Step 4: Processing leads ===")
