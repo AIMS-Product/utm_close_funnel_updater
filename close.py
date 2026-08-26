@@ -1,142 +1,222 @@
-"""Close CRM API client.
+"""Configuration: Close custom field IDs, sheet/tab names, and behavior tunables."""
+import os
 
-Wraps requests.Session with the throttling and retry patterns from the
-internal Close API reference (close-api-reference.md):
+# -----------------------------------------------------------------------------
+# Close CRM custom field IDs
+# -----------------------------------------------------------------------------
+# Note: "Funnel Name Deal (Opp)" is despite its name a LEAD-level custom field.
+# UTM fields all live on the CONTACT object.
+CLOSE_FIELDS = {
+    "lead": {
+        "funnel_name": "cf_xqDQE8fkPsWa0RNEve7hcaxKblCe6489XeZGRDzyPdX",
+        "setter_name": "cf_vz6kNiu4ItFxRA8Y9HKlWIoQMq3TsdaQqKekQ2YuxVk",
+        "resource_tag": "cf_PWAGlTAxZ62ybFh01xcEzVl0RHw6KUXHp4g4YFb2PgT",
+    },
+    "contact": {
+        "utm_source":   "cf_HA1ayKpXNvIKtmfTfLKWTZoEdBrpq5M35d19GinU5on",
+        "utm_medium":   "cf_3csfRoal7yTIJBIBTZf0wJOVTypxE7nMyx6mq9Y0x5f",
+        "utm_campaign": "cf_jnbd0xzUY3tuxzxiGxBs2hONuExeXMvAoTUM2R64Lq3",
+        "utm_content":  "cf_R7o66i0XPycLQHlxOLbIqk6c6j3oB8CzxF3e3apI1hn",
+        "utm_term":     "cf_xmkvth6khfF5h4PS6NYUYSeVfKR1UlSN9ssGTw3xHfj",
+    },
+}
 
-* 0.5s sleep before every call (Close limit ~100 req/min)
-* Retry on 429 using Retry-After header
-* Retry on 5xx with exponential backoff
-* Always pass `_fields` to keep payloads small
-"""
-import logging
-import time
-from typing import Iterator
+# -----------------------------------------------------------------------------
+# Master sheet config
+# -----------------------------------------------------------------------------
+SHEET_ID      = os.environ.get("MASTER_SHEET_ID", "")
+# Tabs to read for sheet-driven funnels. Each tab needs a 'Funnel Name'
+# column plus utm_source/medium/campaign/content. Order doesn't matter.
+# NOTE: Webinar/Meta/VSL are intentionally NOT read — those tabs contain
+# rows describing TRAFFIC SOURCES for those funnels (e.g. utm_source=
+# 'instagram' mapped to 'VSL'), which would override our channel-level
+# mappings and cause spurious conflicts. They're handled by
+# SIMPLE_SOURCE_MAPPINGS below until we work out the disambiguation.
+SOURCE_TABS   = ["YouTube"]
+MISSING_TAB   = "_Missing Funnels"
+CONFLICTS_TAB = "_Conflicts"
+RUN_LOG_TAB   = "_Run Log"
 
-import requests
+# The column header in the source tabs that carries the funnel name to write
+# to Close. The fallback exists so we don't break if the YouTube tab still
+# uses the old longer header name — remove the fallback once all tabs are
+# renamed.
+FUNNEL_NAME_HEADER          = "Funnel Name"
+FUNNEL_NAME_HEADER_FALLBACK = "Funnel Name for Close"
 
-log = logging.getLogger(__name__)
+# Required column headers in every source tab. Script aborts on any tab
+# missing these. Both FUNNEL_NAME_HEADER variants are acceptable; the read
+# code picks whichever is present.
+REQUIRED_HEADERS = ["utm_source", "utm_medium", "utm_campaign", "utm_content"]
 
+# -----------------------------------------------------------------------------
+# Behavior
+# -----------------------------------------------------------------------------
+# Only process contacts updated within this many days.
+# 7 is sufficient given typical booking windows of 2–5 days.
+LOOKBACK_DAYS = 7
 
-class CloseClient:
-    BASE = "https://api.close.com/api/v1"
-    THROTTLE_SEC = 0.5
-    DEFAULT_RETRIES = 5
+# Abort the run if the source tab's row count drops by more than this fraction
+# compared to the most recent successful run (catches broken IMPORTRANGE).
+ROW_DROP_ABORT_THRESHOLD = 0.30
 
-    def __init__(self, api_key: str):
-        if not api_key:
-            raise ValueError("Close API key is required")
-        self.session = requests.Session()
-        self.session.auth = (api_key, "")
+# DRY_RUN=true skips all Close writes; reads/reports still happen.
+DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 
-    # -------------------------------------------------------------------------
-    # Internal request wrapper
-    # -------------------------------------------------------------------------
-    def _request(self, method, path, params=None, json=None, retry=DEFAULT_RETRIES):
-        url = f"{self.BASE}{path}"
-        last_exc = None
-        for attempt in range(retry):
-            time.sleep(self.THROTTLE_SEC)
-            try:
-                resp = self.session.request(
-                    method, url, params=params, json=json, timeout=30
-                )
-            except requests.RequestException as e:
-                last_exc = e
-                backoff = 2 ** attempt
-                log.warning(
-                    "Network error on %s %s (attempt %d/%d): %s — retrying in %ds",
-                    method, path, attempt + 1, retry, e, backoff,
-                )
-                time.sleep(backoff)
-                continue
+# Timezone used for all timestamps written to reports and the Python log
+# output. Defaults to Pacific so it matches the GitHub Actions UI for the
+# Eugene-based author. Override via REPORT_TIMEZONE env var if needed.
+TIMEZONE = os.environ.get("REPORT_TIMEZONE", "America/Los_Angeles")
 
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 10))
-                log.warning("Rate limited on %s %s, sleeping %ds", method, path, wait)
-                time.sleep(wait)
-                continue
+# Cell values that indicate the sheet didn't load properly.
+INTEGRITY_FAIL_VALUES = {"#REF!", "#ERROR!", "#N/A", "Loading...", "#NAME?", "#VALUE!"}
 
-            if 500 <= resp.status_code < 600:
-                backoff = 2 ** attempt
-                log.warning(
-                    "Close %d on %s %s (attempt %d/%d) — retrying in %ds",
-                    resp.status_code, method, path, attempt + 1, retry, backoff,
-                )
-                time.sleep(backoff)
-                continue
+# -----------------------------------------------------------------------------
+# Simple source → funnel mappings (channels without per-campaign rules)
+# -----------------------------------------------------------------------------
+# For channels where every contact with this utm_source should get the same
+# funnel name regardless of campaign. Sheet-driven channels (YouTube, later
+# Webinar/Meta/VSL/Paid) override these if the same key appears in both.
+# Keys MUST be lowercase. Values are the exact funnel name written to Close.
+SIMPLE_SOURCE_MAPPINGS = {
+    "instagram":        "Instagram",
+    "x":                "X",
+    "twitter":          "X",
+    "x-twitter":        "X",
+    "linkedin":         "Linkedin",
+    "li":               "Linkedin",
+    "internal-webinar": "Internal Webinar",
+    "meta":             "Meta Ads",
+    "newsletter":       "VSL",
+    "tiktok":           "TikTok",
+    "ak-ig":            "Anthony IG",
+    "anthony-ig":       "Anthony IG",
+    "anthony-x":        "Anthony X",
+    "anthony-li":       "Linkedin",
+    "anthony-tt":       "TikTok",
+    "ltf":              "LTF - In-House",
+    "mike-ig":          "Instagram",
+    "mike instagram":   "Instagram",
+    "mike li":          "Linkedin",
+    "mike-x":           "X",
+    "chatbot":          "Website",
+}
 
-            resp.raise_for_status()
-            return resp.json()
+# Some integrations stuff the entire UTM query string into the utm_source
+# field, e.g. "linkedin&utm_medium=Kara&utm_campaign=vp_setter&...".
+# We classify these by the part before the first '&' or '?'. Applies to every
+# channel where we've observed the pattern.
+MALFORMED_SOURCE_PREFIXES = {
+    "youtube":          "YouTube",
+    "instagram":        "Instagram",
+    "linkedin":         "Linkedin",
+    "twitter":          "X",
+    "x-twitter":        "X",
+    "internal-webinar": "Internal Webinar",
+    "meta":             "Meta Ads",
+    "newsletter":       "VSL",
+    "tiktok":           "TikTok",
+    "ak-ig":            "Anthony IG",
+    "anthony-ig":       "Anthony IG",
+    "anthony-x":        "Anthony X",
+    "anthony-li":       "Linkedin",
+    "anthony-tt":       "TikTok",
+    "ltf":              "LTF - In-House",
+    "mike-ig":          "Instagram",
+    "mike instagram":   "Instagram",
+    "mike li":          "Linkedin",
+    "mike-x":           "X",
+    "chatbot":          "Website",
+}
 
-        if last_exc:
-            raise last_exc
-        raise RuntimeError(f"Max retries exceeded for {method} {path}")
+# -----------------------------------------------------------------------------
+# Source + medium overrides
+# -----------------------------------------------------------------------------
+# Some channels split into "owned" vs "agency-managed" based on utm_medium.
+# If a contact's utm_source matches an outer key AND utm_medium matches an
+# inner key, the inner value wins over SIMPLE_SOURCE_MAPPINGS. Falls back to
+# the regular source mapping if no medium override matches.
+#
+# Both keys are case-insensitive (normalized to lowercase + stripped).
+SOURCE_MEDIUM_OVERRIDES = {
+    "instagram": {
+        "organic-social": "Anthony IG",
+    },
+}
 
-    # -------------------------------------------------------------------------
-    # Contact search (paginated, generator)
-    # -------------------------------------------------------------------------
-    def search_contacts(self, query: str, fields: list[str]) -> Iterator[dict]:
-        """Yield every contact matching `query`, paging in batches of 100.
+# -----------------------------------------------------------------------------
+# UTM source → setter name attribution
+# -----------------------------------------------------------------------------
+# When a contact comes in via one of these utm_sources, the funnel write
+# ALSO writes this value to the lead's "Reactivation - Setter Name" field.
+# Fill-only — an existing setter name is never overwritten. Only fires
+# on the same passes where we'd write the funnel (not on already_set /
+# conflict leads).
+#
+# The setter-name field is a Close choice field, so the values here MUST
+# match exactly one of that field's configured choices in Close.
+# Keys MUST be lowercase.
+UTM_SOURCE_TO_SETTER = {
+    "mike-ig":    "Pearl Sathekge",
+    "mike-x":     "Mariam Olufumi",
+    "anthony-x":  "Mariam Olufumi",
+    "anthony-li": "Mariam Olufumi",
+    # anthony-ig and anthony-tt intentionally omitted — funnel writes still
+    # happen for these utm_sources, but no setter name is written.
+}
 
-        Results are ordered by date_updated DESCENDING (most recent first).
-        This lets consumers early-terminate when records become older than a
-        cutoff — important because Close caps skip-based pagination at ~10k
-        records, and the /contact/ endpoint silently ignores date filters
-        in the text query string.
-        """
-        skip = 0
-        while True:
-            data = self._request("GET", "/contact/", params={
-                "query":     query,
-                "_skip":     skip,
-                "_limit":    100,
-                "_fields":   ",".join(fields),
-                "_order_by": "-date_updated",
-            })
-            batch = data.get("data", [])
-            if not batch:
-                return
-            for c in batch:
-                yield c
-            if not data.get("has_more"):
-                return
-            skip += 100
+# -----------------------------------------------------------------------------
+# Resource Tag → funnel (lead-level fallback when no UTMs are present)
+# -----------------------------------------------------------------------------
+# Some leads (notably from the website application form) come through with
+# no utm_source on any contact. For those, we fall back to the lead-level
+# "Resource Tag" custom field. If a lead's Resource Tag matches a KEY below
+# AND every contact on the lead has an empty utm_source, we write the VALUE
+# as the funnel name.
+#
+# Runs as its own pass AFTER the utm_source scan. Any lead already picked up
+# by the utm_source pass is skipped here — utm_source always wins.
+#
+# Keys are compared exactly (case-sensitive) since Resource Tag is a text
+# field, not a choices field.
+RESOURCE_TAG_TO_FUNNEL = {
+    "website-application": "Website",
+}
 
-    # -------------------------------------------------------------------------
-    # Lead search (paginated, generator)
-    # -------------------------------------------------------------------------
-    def search_leads(self, query: str, fields: list[str]) -> Iterator[dict]:
-        """Yield every lead matching `query`, paging in batches of 100.
+# -----------------------------------------------------------------------------
+# Overwrite policy
+# -----------------------------------------------------------------------------
+# Normally the script is fill-only: if the funnel field is already set we
+# don't overwrite, we log a conflict. The two sets below introduce a narrow
+# exception:
+#
+#   - If the lead's CURRENT funnel is in OVERRIDABLE_CURRENT_FUNNELS, we
+#     are willing to overwrite it...
+#   - ...UNLESS the funnel we're about to WRITE is in
+#     NON_OVERRIDING_TARGET_FUNNELS, in which case it's treated as a
+#     conflict (these are weak/ambient attribution signals that shouldn't
+#     stomp on stronger ones).
+#
+# Exact string match, case-sensitive. Add / remove freely.
+OVERRIDABLE_CURRENT_FUNNELS = {
+    "Reactivation Email",
+}
 
-        Ordered by date_updated DESCENDING so callers can early-terminate on
-        age if desired. Skip-based pagination is capped at ~10k on Close's
-        side; callers processing a full population should be aware.
-        """
-        skip = 0
-        while True:
-            data = self._request("GET", "/lead/", params={
-                "query":     query,
-                "_skip":     skip,
-                "_limit":    100,
-                "_fields":   ",".join(fields),
-                "_order_by": "-date_updated",
-            })
-            batch = data.get("data", [])
-            if not batch:
-                return
-            for lead in batch:
-                yield lead
-            if not data.get("has_more"):
-                return
-            skip += 100
+NON_OVERRIDING_TARGET_FUNNELS = {
+    "Low Ticket Funnel",
+    "LTF - Quiz Funnel",
+}
 
-    # -------------------------------------------------------------------------
-    # Lead read / update
-    # -------------------------------------------------------------------------
-    def get_lead(self, lead_id: str, fields: list[str]) -> dict:
-        return self._request("GET", f"/lead/{lead_id}/", params={
-            "_fields": ",".join(fields),
-        })
-
-    def update_lead(self, lead_id: str, payload: dict) -> dict:
-        return self._request("PUT", f"/lead/{lead_id}/", json=payload)
+# -----------------------------------------------------------------------------
+# Direct funnel rewrites
+# -----------------------------------------------------------------------------
+# {current_funnel: target_funnel}
+# Any lead whose current funnel matches a KEY gets its funnel updated to the
+# VALUE, regardless of utm_source. Runs as its own pass BEFORE the utm_source
+# scan, so a rewritten lead already has its new value by the time contact
+# processing starts. Use for consolidation / renaming / retiring old funnels.
+#
+# Exact string match, case-sensitive.
+FUNNEL_REWRITES = {
+    "Low Ticket Funnel": "LTF - In-House",
+}
