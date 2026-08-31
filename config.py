@@ -100,6 +100,7 @@ SIMPLE_SOURCE_MAPPINGS = {
     "mike li":          "Linkedin",
     "mike-x":           "X",
     "chatbot":          "Website",
+    "ghl":              "GoHighLevel",
 }
 
 # Some integrations stuff the entire UTM query string into the utm_source
@@ -127,6 +128,7 @@ MALFORMED_SOURCE_PREFIXES = {
     "mike li":          "Linkedin",
     "mike-x":           "X",
     "chatbot":          "Website",
+    "ghl":              "GoHighLevel",
 }
 
 # -----------------------------------------------------------------------------
@@ -163,6 +165,23 @@ UTM_SOURCE_TO_SETTER = {
     "anthony-li": "Mariam Olufumi",
     # anthony-ig and anthony-tt intentionally omitted — funnel writes still
     # happen for these utm_sources, but no setter name is written.
+}
+
+# For utm_sources where the SETTER identity is carried in utm_medium instead
+# of being implicit in the source (currently just GHL booking redirects,
+# where each setter has their own redirect with a hardcoded utm_medium),
+# nest the mapping by source: {utm_source: {utm_medium: setter_name}}.
+#
+# Only fires when the source is in this dict AND the contact's utm_medium
+# matches one of the inner keys. Same fill-only + race-protected rules
+# as UTM_SOURCE_TO_SETTER. If a source appears in both dicts, the flat
+# UTM_SOURCE_TO_SETTER wins.
+#
+# Both key levels are case-insensitive.
+UTM_MEDIUM_TO_SETTER = {
+    "ghl": {
+        "pearl": "Pearl Sathekge",
+    },
 }
 
 # -----------------------------------------------------------------------------
