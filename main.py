@@ -589,11 +589,20 @@ def main() -> int:
         ftag = f"[{target_funnel}]"
 
         # Determine target setter name based on the triggering contact's
-        # utm_source. Fill-only — only written if the setter field is empty.
+        # utm_source (primary) or utm_source+utm_medium (secondary, for
+        # sources like GHL where the setter identity lives in utm_medium).
+        # Fill-only — only written if the setter field is empty.
         triggering_utm_source = matcher.normalize(
             contacts[0].get(f"custom.{utm_source_field}")
         )
+        triggering_utm_medium = matcher.normalize(
+            contacts[0].get(f"custom.{utm_medium_field}")
+        )
         target_setter = config.UTM_SOURCE_TO_SETTER.get(triggering_utm_source)
+        if not target_setter and triggering_utm_source in config.UTM_MEDIUM_TO_SETTER:
+            target_setter = config.UTM_MEDIUM_TO_SETTER[triggering_utm_source].get(
+                triggering_utm_medium
+            )
 
         # Fetch the lead to read its current Funnel Name + Setter Name
         try:
