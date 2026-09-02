@@ -137,12 +137,17 @@ class CloseClient:
         """Return every contact for a given lead. Small paginated helper —
         used by the Resource Tag pass to verify no contact has a utm_source
         before falling back to lead-level attribution.
+
+        Uses the text-query syntax (`query=lead_id:X`) rather than a direct
+        `lead_id=X` filter parameter, because the `/contact/` endpoint doesn't
+        reliably support `lead_id` as a top-level filter — passing it there
+        may be silently ignored, returning unfiltered global contacts.
         """
         out: list[dict] = []
         skip = 0
         while True:
             data = self._request("GET", "/contact/", params={
-                "lead_id": lead_id,
+                "query":   f"lead_id:{lead_id}",
                 "_skip":   skip,
                 "_limit":  100,
                 "_fields": ",".join(fields),
