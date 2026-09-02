@@ -519,11 +519,24 @@ def main() -> int:
                         stats["errors"] += 1
                         continue
 
+                    # Build a debug view of what each contact's utm_source looks
+                    # like — helps diagnose false utm_present skips.
+                    contact_debug = [
+                        f"{c.get('id')}=utm_source={c.get(f'custom.{utm_source_field}')!r}"
+                        for c in lead_contacts
+                    ]
+
                     if any(
                         str(c.get(f"custom.{utm_source_field}") or "").strip()
                         for c in lead_contacts
                     ):
                         rt_utm_present += 1
+                        # DIAGNOSTIC: log exactly what triggered the skip
+                        log.info(
+                            "%s Skipping lead %s — %d contact(s) with utm_source: %s",
+                            ftag, lead_id, len(lead_contacts),
+                            "; ".join(contact_debug),
+                        )
                         continue
 
                     # All contacts have empty utm_source — apply target funnel.
