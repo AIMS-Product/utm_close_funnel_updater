@@ -138,16 +138,20 @@ class CloseClient:
         used by the Resource Tag pass to verify no contact has a utm_source
         before falling back to lead-level attribution.
 
-        Uses the text-query syntax (`query=lead_id:X`) rather than a direct
-        `lead_id=X` filter parameter, because the `/contact/` endpoint doesn't
-        reliably support `lead_id` as a top-level filter — passing it there
-        may be silently ignored, returning unfiltered global contacts.
+        Uses `lead_id=X` as a direct filter parameter — this is what Close's
+        `/contact/` endpoint actually honors. (A `query=lead_id:X` text-search
+        version was tried and DOES NOT filter — it returns all contacts
+        globally and paginates until hitting Close's ~10k cap.)
+
+        Includes a hard page cap (50 pages = 5000 contacts) as a safety net
+        against runaway loops if the endpoint behavior ever changes again.
         """
         out: list[dict] = []
         skip = 0
+        page = 0
         while True:
             data = self._request("GET", "/contact/", params={
-                "query":   f"lead_id:{lead_id}",
+                "lead_id": lead_id,
                 "_skip":   skip,
                 "_limit":  100,
                 "_fields": ",".join(fields),
@@ -156,8 +160,14 @@ class CloseClient:
             if not batch:
                 break
             out.extend(batch)
+            page += 1
             if not data.get("has_more"):
                 break
+            if page >= 50:
+                raise RuntimeError(
+                    f"list_contacts_for_lead({lead_id}) exceeded 50 pages "
+                    f"({len(out)} contacts fetched) — endpoint filter likely broken"
+                )
             skip += 100
         return out
 
